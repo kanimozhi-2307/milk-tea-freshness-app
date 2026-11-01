@@ -5,10 +5,13 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import streamlit as st
 import tensorflow as tf
 import numpy as np
+import torch
+
 from PIL import Image
 from huggingface_hub import hf_hub_download
+from transformers import pipeline
 
-# Fix TensorFlow Lambda deserialization compatibility
+# TensorFlow Lambda deserialization compatibility
 import keras.src.utils.python_utils as python_utils
 python_utils.tf = tf
 
@@ -19,9 +22,24 @@ python_utils.tf = tf
 
 REPO_ID = "kanimozhi23/milk-tea-freshness-model"
 
+CLIP_MODEL_ID = "openai/clip-vit-base-patch32"
+
 CLASS_NAMES = ["FRESH", "MODERATE", "LOW"]
 
 IMAGE_SIZE = (224, 224)
+
+# Initial threshold. Must be tested and adjusted.
+TEA_THRESHOLD = 0.65
+
+TEA_LABEL = (
+    "a photo of brewed milk tea in a cup or glass"
+)
+
+NOT_TEA_LABEL = (
+    "a photo without brewed milk tea, such as "
+    "an empty glass, water, coffee, another drink, "
+    "food, a person, an animal, or an unrelated object"
+)
 
 
 # ------------------------------------------
@@ -36,11 +54,58 @@ st.set_page_config(
 
 
 # ------------------------------------------
-# LOAD TRAINED MODEL
+# LOAD CLIP TEA DETECTOR
 # ------------------------------------------
 
 @st.cache_resource
-def load_model():
+def load_tea_detector():
+
+    detector = pipeline(
+        task="zero-shot-image-classification",
+        model=CLIP_MODEL_ID,
+        device=-1
+    )
+
+    return detector
+
+
+# ------------------------------------------
+# TEA / NOT-TEA DETECTION
+# ------------------------------------------
+
+def detect_tea(image, detector):
+
+    image = image.convert("RGB")
+
+    results = detector(
+        image,
+        candidate_labels=[
+            TEA_LABEL,
+            NOT_TEA_LABEL
+        ],
+        hypothesis_template="{}"
+    )
+
+    score_map = {
+        item["label"]: float(item["score"])
+        for item in results
+    }
+
+    tea_score = score_map.get(TEA_LABEL, 0.0)
+
+    not_tea_score = score_map.get(NOT_TEA_LABEL, 0.0)
+
+    is_tea = tea_score >= TEA_THRESHOLD
+
+    return is_tea, tea_score, not_tea_score
+
+
+# ------------------------------------------
+# LOAD EXISTING FRESHNESS MODEL
+# ------------------------------------------
+
+@st.cache_resource
+def load_freshness_model():
 
     model_path = hf_hub_download(
         repo_id=REPO_ID,
@@ -100,12 +165,12 @@ def predict_freshness(image, model):
 st.title("🧋 Milk Tea Freshness Detection")
 
 st.subheader(
-    "EfficientNetV2-S + CBAM Deep Learning Model"
+    "CLIP AI + EfficientNetV2-S + CBAM"
 )
 
 st.write(
-    "Estimate the freshness level of brewed milk tea "
-    "using an RGB image."
+    "Upload a brewed milk tea image to estimate its "
+    "visual freshness level using deep learning."
 )
 
 st.divider()
@@ -149,7 +214,7 @@ input_method = st.radio(
 if input_method == "Upload Image":
 
     uploaded_image = st.file_uploader(
-        "Choose a milk tea image",
+        "Choose an image",
         type=["jpg", "jpeg", "png"]
     )
 
@@ -161,7 +226,7 @@ else:
 
 
 # ------------------------------------------
-# DISPLAY AND PREDICT
+# DISPLAY IMAGE AND PREDICT
 # ------------------------------------------
 
 if uploaded_image is not None:
@@ -172,7 +237,7 @@ if uploaded_image is not None:
 
     st.image(
         image,
-        caption="Input Milk Tea Image",
+        caption="Uploaded Image",
         width=400
     )
 
@@ -183,11 +248,59 @@ if uploaded_image is not None:
 
         try:
 
+            # STEP 1: CHECK WHETHER IMAGE CONTAINS TEA
+
             with st.spinner(
-                "Loading model and estimating freshness..."
+                "AI is checking the uploaded image..."
             ):
 
-                model = load_model()
+                tea_detector = load_tea_detector()
+
+                is_tea, tea_score, not_tea_score = (
+                    detect_tea(image, tea_detector)
+                )
+
+            st.divider()
+
+            st.subheader("AI Image Verification")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.metric(
+                    "Milk Tea Match Score",
+                    f"{tea_score * 100:.2f}%"
+                )
+
+            with col2:
+                st.metric(
+                    "Non-Tea Match Score",
+                    f"{not_tea_score * 100:.2f}%"
+                )
+
+            # STEP 2: REJECT NON-TEA IMAGES
+
+            if not is_tea:
+
+                st.error("🚫 TEA NOT FOUND")
+
+                st.warning(
+                    "The uploaded image could not be verified "
+                    "as brewed milk tea. Please upload a clear "
+                    "milk tea image."
+                )
+
+                st.stop()
+
+            # STEP 3: PREDICT FRESHNESS
+
+            st.success("✅ MILK TEA DETECTED")
+
+            with st.spinner(
+                "Estimating milk tea freshness..."
+            ):
+
+                model = load_freshness_model()
 
                 predicted_class, confidence, predictions = (
                     predict_freshness(image, model)
@@ -195,13 +308,27 @@ if uploaded_image is not None:
 
             st.divider()
 
-            st.subheader("Prediction Result")
+            st.subheader("Freshness Prediction Result")
+
+            if predicted_class == "FRESH":
+
+                st.success("FRESH")
+
+            elif predicted_class == "MODERATE":
+
+                st.warning("MODERATE")
+
+            else:
+
+                st.error("LOW")
 
             st.metric(
                 label="Predicted Freshness",
                 value=predicted_class,
-                delta=f"{confidence:.2f}% confidence"
+                delta=f"{confidence:.2f}% model score"
             )
+
+            # CLASS-WISE PROBABILITY
 
             st.subheader("Class-wise Probability")
 
@@ -241,23 +368,26 @@ st.subheader("About the Project")
 
 st.write(
     """
-    This application estimates the freshness of brewed
-    milk tea using a deep learning model.
+    This application uses a two-stage AI approach.
 
-    **Architecture:** EfficientNetV2-S + CBAM
+    **Stage 1 – Image Verification:**
+    CLIP checks whether the uploaded image resembles brewed milk tea.
 
-    **Input:** RGB milk tea image
+    **Stage 2 – Freshness Estimation:**
+    EfficientNetV2-S with CBAM predicts the freshness category.
 
-    **Image Size:** 224 × 224 pixels
+    **Input:** RGB image
 
-    **Output:** FRESH, MODERATE, or LOW
+    **Image Size for Freshness Model:** 224 × 224 pixels
+
+    **Output:** FRESH, MODERATE, LOW, or TEA NOT FOUND
     """
 )
 
 st.info(
-    "This application estimates visual freshness patterns "
-    "learned from the training dataset. It is not a laboratory "
-    "test or a food-safety assessment."
+    "The application estimates visual freshness patterns "
+    "learned from the dataset. It is not a laboratory test "
+    "or a food-safety assessment."
 )
 
 st.caption(
