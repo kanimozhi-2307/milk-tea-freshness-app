@@ -1,6 +1,7 @@
 streamlit
-tensorflow==2.21.0
-keras==3.13.2
-numpy<2.2
+tensorflow
+numpy
 Pillow
 huggingface_hub
+transformers>=4.45,<5
+torch
