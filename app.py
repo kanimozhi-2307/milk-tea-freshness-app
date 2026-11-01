@@ -16,6 +16,39 @@ from google.genai import types
 
 
 # --------------------------------------------------
+# CUSTOM CBAM LAYERS
+# Must be defined before loading the saved model
+# --------------------------------------------------
+
+@tf.keras.utils.register_keras_serializable(package="TeaCBAM")
+class SpatialAverage(tf.keras.layers.Layer):
+
+    def call(self, inputs):
+        return tf.reduce_mean(
+            inputs,
+            axis=-1,
+            keepdims=True
+        )
+
+    def compute_output_shape(self, input_shape):
+        return tuple(input_shape[:-1]) + (1,)
+
+
+@tf.keras.utils.register_keras_serializable(package="TeaCBAM")
+class SpatialMaximum(tf.keras.layers.Layer):
+
+    def call(self, inputs):
+        return tf.reduce_max(
+            inputs,
+            axis=-1,
+            keepdims=True
+        )
+
+    def compute_output_shape(self, input_shape):
+        return tuple(input_shape[:-1]) + (1,)
+
+
+# --------------------------------------------------
 # CONFIGURATION
 # --------------------------------------------------
 
@@ -139,7 +172,7 @@ def detect_tea(image, client):
 
 
 # --------------------------------------------------
-# LOAD TRAINED FRESHNESS MODEL
+# LOAD CORRECTED TRAINED FRESHNESS MODEL
 # --------------------------------------------------
 
 @st.cache_resource
@@ -151,11 +184,29 @@ def load_freshness_model():
         repo_type="model"
     )
 
+    custom_objects = {
+        "SpatialAverage": SpatialAverage,
+        "SpatialMaximum": SpatialMaximum,
+        "TeaCBAM>SpatialAverage": SpatialAverage,
+        "TeaCBAM>SpatialMaximum": SpatialMaximum
+    }
+
     model = tf.keras.models.load_model(
         model_path,
+        custom_objects=custom_objects,
         compile=False,
-        safe_mode=False
+        safe_mode=True
     )
+
+    if model.input_shape[1:] != (224, 224, 3):
+        raise ValueError(
+            f"Unexpected model input shape: {model.input_shape}"
+        )
+
+    if model.output_shape[-1] != 3:
+        raise ValueError(
+            f"Unexpected model output shape: {model.output_shape}"
+        )
 
     return model
 
@@ -240,7 +291,7 @@ else:
 
 
 # --------------------------------------------------
-# DISPLAY IMAGE
+# DISPLAY IMAGE AND PREDICT
 # --------------------------------------------------
 
 if uploaded_image is not None:
@@ -260,7 +311,7 @@ if uploaded_image is not None:
     ):
 
         # ------------------------------------------
-        # STEP 1: CHECK WHETHER IMAGE CONTAINS TEA
+        # STEP 1: MILK TEA VERIFICATION
         # ------------------------------------------
 
         st.subheader("Step 1: Milk Tea Verification")
@@ -307,14 +358,13 @@ if uploaded_image is not None:
 
                 st.success("✅ MILK TEA DETECTED")
 
-        except Exception as e:
+        except Exception:
 
             st.error(
                 "Milk tea verification failed. "
-                "Please check your Gemini API key and logs."
+                "Please check your Gemini API key and "
+                "Streamlit deployment logs."
             )
-
-            st.exception(e)
 
             st.stop()
 
@@ -386,14 +436,17 @@ if uploaded_image is not None:
                     min(max(percentage / 100, 0.0), 1.0)
                 )
 
-        except Exception as e:
+        except Exception:
 
             st.error(
                 "Freshness prediction failed. "
-                "Please check your model file and deployment logs."
+                "Please check the Hugging Face model "
+                "and Streamlit deployment logs."
             )
 
-            st.exception(e)
+            st.exception(Exception(
+                "Model loading or prediction failed."
+            ))
 
 
 # --------------------------------------------------
