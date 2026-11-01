@@ -1,7 +1,7 @@
+
 streamlit
 tensorflow
 numpy
 Pillow
 huggingface_hub
-transformers>=4.45,<5
-torch
+google-genai
