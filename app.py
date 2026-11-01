@@ -12,49 +12,49 @@ import numpy as np
 from PIL import Image
 from huggingface_hub import hf_hub_download
 from google import genai
+from google.genai import types
 
 
-# ------------------------------------------
-# TENSORFLOW COMPATIBILITY
-# ------------------------------------------
-
-# Compatibility support for Lambda layers in saved models
-try:
-    import keras.src.utils.python_utils as python_utils
-    python_utils.tf = tf
-except (ImportError, AttributeError):
-    pass
-
-
-# ------------------------------------------
-# PROJECT CONFIGURATION
-# ------------------------------------------
+# --------------------------------------------------
+# CONFIGURATION
+# --------------------------------------------------
 
 REPO_ID = "kanimozhi23/milk-tea-freshness-model"
-
 MODEL_FILENAME = "model.keras"
 
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 CLASS_NAMES = ["FRESH", "MODERATE", "LOW"]
-
 IMAGE_SIZE = (224, 224)
 
 
-# ------------------------------------------
+# --------------------------------------------------
 # STREAMLIT PAGE CONFIGURATION
-# ------------------------------------------
+# --------------------------------------------------
 
 st.set_page_config(
     page_title="Milk Tea Freshness Detection",
     page_icon="🧋",
-    layout="wide"
+    layout="centered"
+)
+
+st.title("🧋 Milk Tea Freshness Detection")
+
+st.write(
+    "Upload or capture a brewed milk tea image "
+    "to estimate its freshness level using AI."
+)
+
+st.info(
+    "First, Gemini AI checks whether the image contains "
+    "brewed milk tea. The freshness model runs only after "
+    "milk tea is detected."
 )
 
 
-# ------------------------------------------
-# LOAD GEMINI CLIENT
-# ------------------------------------------
+# --------------------------------------------------
+# GEMINI CLIENT
+# --------------------------------------------------
 
 @st.cache_resource
 def load_gemini_client():
@@ -63,81 +63,67 @@ def load_gemini_client():
 
     if not api_key:
         raise ValueError(
-            "Gemini API key is missing. "
-            "Please add GEMINI_API_KEY in Streamlit Secrets."
+            "GEMINI_API_KEY is missing. "
+            "Please add it in Streamlit Secrets."
         )
 
-    client = genai.Client(api_key=api_key)
-
-    return client
+    return genai.Client(api_key=api_key)
 
 
-# ------------------------------------------
-# GEMINI AI: TEA / NON-TEA DETECTION
-# ------------------------------------------
+# --------------------------------------------------
+# MILK TEA DETECTION
+# --------------------------------------------------
 
 def detect_tea(image, client):
 
-    image_buffer = io.BytesIO()
+    image_bytes = io.BytesIO()
 
     image.convert("RGB").save(
-        image_buffer,
-        format="JPEG",
-        quality=90
+        image_bytes,
+        format="JPEG"
     )
 
-    image_bytes = image_buffer.getvalue()
-
     prompt = """
-    You are an image verification system for a brewed milk tea
-    freshness estimation application.
+    Examine the uploaded image carefully.
 
-    Examine the image and classify it into exactly one category.
+    Determine whether the main visible subject is
+    brewed milk tea in a cup or glass.
 
-    MILK_TEA:
-    Select this only if a prepared brewed milk tea beverage
-    is visibly present in a cup, glass, or container.
+    Do not classify tea leaves, plain water, coffee,
+    juice, other drinks, or unrelated objects as milk tea.
 
-    NOT_MILK_TEA:
-    Select this for coffee, water, juice, plain milk,
-    other beverages, food, people, animals, objects,
-    empty cups, tea leaves, tea powder, or unrelated images.
+    Return exactly ONE of these labels:
 
-    UNCERTAIN:
-    Select this if the image is blurry, too dark, unclear,
-    or does not provide enough visual evidence.
-
-    Important rules:
-    - Do not assume every brown or beige liquid is milk tea.
-    - Do not classify tea leaves or tea powder as brewed milk tea.
-    - Do not predict freshness.
-    - Do not assess food safety.
-
-    Return only one exact label:
     MILK_TEA
     NOT_MILK_TEA
     UNCERTAIN
+
+    Use MILK_TEA only when brewed milk tea is clearly visible.
+    Use NOT_MILK_TEA when the image clearly does not contain
+    brewed milk tea.
+    Use UNCERTAIN when the image is unclear, obstructed,
+    or insufficient to make a reliable decision.
+
+    Return only the label.
     """
 
     response = client.models.generate_content(
         model=GEMINI_MODEL,
         contents=[
             prompt,
-            genai.types.Part.from_bytes(
-                data=image_bytes,
+            types.Part.from_bytes(
+                data=image_bytes.getvalue(),
                 mime_type="image/jpeg"
             )
         ],
-        config=genai.types.GenerateContentConfig(
+        config=types.GenerateContentConfig(
             temperature=0,
             max_output_tokens=30
         )
     )
 
     if not response.text:
-        raise ValueError(
-            "Gemini returned an empty response."
-        )
+        return "UNCERTAIN"
 
     result = response.text.strip().upper()
 
@@ -146,18 +132,15 @@ def detect_tea(image, client):
         result
     )
 
-    if match is None:
-        raise ValueError(
-            "Gemini returned an unexpected result. "
-            "Please try again."
-        )
+    if match:
+        return match.group(1)
 
-    return match.group(1)
+    return "UNCERTAIN"
 
 
-# ------------------------------------------
-# LOAD EXISTING FRESHNESS MODEL
-# ------------------------------------------
+# --------------------------------------------------
+# LOAD TRAINED FRESHNESS MODEL
+# --------------------------------------------------
 
 @st.cache_resource
 def load_freshness_model():
@@ -177,15 +160,18 @@ def load_freshness_model():
     return model
 
 
-# ------------------------------------------
+# --------------------------------------------------
 # FRESHNESS PREDICTION
-# ------------------------------------------
+# --------------------------------------------------
 
 def predict_freshness(image, model):
 
     image = image.convert("RGB")
 
-    image = image.resize(IMAGE_SIZE)
+    image = image.resize(
+        IMAGE_SIZE,
+        Image.Resampling.BILINEAR
+    )
 
     image_array = np.array(
         image,
@@ -204,267 +190,215 @@ def predict_freshness(image, model):
 
     if len(predictions) != len(CLASS_NAMES):
         raise ValueError(
-            "Model output does not contain exactly three classes. "
-            "Please verify the model output and class order."
+            "The model output does not contain exactly "
+            "three classes. Please check your trained model."
         )
 
-    predicted_index = int(
-        np.argmax(predictions)
-    )
+    predicted_index = int(np.argmax(predictions))
 
     predicted_class = CLASS_NAMES[predicted_index]
 
     confidence = float(
-        predictions[predicted_index]
-    ) * 100
+        predictions[predicted_index] * 100
+    )
 
     return predicted_class, confidence, predictions
 
 
-# ------------------------------------------
-# APPLICATION TITLE
-# ------------------------------------------
-
-st.title("🧋 Milk Tea Freshness Detection")
-
-st.subheader(
-    "Gemini AI + EfficientNetV2-S + CBAM"
-)
-
-st.write(
-    """
-    Upload or capture a brewed milk tea image.
-    The application first verifies whether the image contains
-    brewed milk tea and then estimates its visual freshness level.
-    """
-)
-
-st.divider()
-
-
-# ------------------------------------------
-# FRESHNESS CATEGORY INFORMATION
-# ------------------------------------------
-
-st.subheader("Freshness Categories")
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.success("FRESH")
-    st.write("0–3 minutes")
-
-with col2:
-    st.warning("MODERATE")
-    st.write("4–10 minutes")
-
-with col3:
-    st.error("LOW")
-    st.write("11–20 minutes")
-
-st.divider()
-
-
-# ------------------------------------------
+# --------------------------------------------------
 # IMAGE INPUT
-# ------------------------------------------
+# --------------------------------------------------
 
-st.subheader("Upload or Capture Milk Tea Image")
+st.subheader("Upload or Capture Image")
 
 input_method = st.radio(
-    "Select image input method",
+    "Choose image input method:",
     ["Upload Image", "Capture Image"],
     horizontal=True
 )
 
+uploaded_image = None
+
 if input_method == "Upload Image":
 
-    uploaded_image = st.file_uploader(
-        "Choose an image",
+    uploaded_file = st.file_uploader(
+        "Choose a milk tea image",
         type=["jpg", "jpeg", "png"]
     )
 
+    if uploaded_file is not None:
+        uploaded_image = Image.open(uploaded_file)
+
 else:
 
-    uploaded_image = st.camera_input(
+    camera_image = st.camera_input(
         "Capture a milk tea image"
     )
 
+    if camera_image is not None:
+        uploaded_image = Image.open(camera_image)
 
-# ------------------------------------------
-# DISPLAY IMAGE AND PREDICT
-# ------------------------------------------
+
+# --------------------------------------------------
+# DISPLAY IMAGE
+# --------------------------------------------------
 
 if uploaded_image is not None:
 
-    try:
-
-        image = Image.open(
-            uploaded_image
-        ).convert("RGB")
-
-    except Exception:
-
-        st.error(
-            "Unable to read this image. "
-            "Please upload a valid JPG or PNG image."
-        )
-
-        st.stop()
+    uploaded_image = uploaded_image.convert("RGB")
 
     st.image(
-        image,
+        uploaded_image,
         caption="Selected Image",
-        width=400
+        use_container_width=True
     )
 
     if st.button(
         "Predict Freshness",
-        type="primary"
+        type="primary",
+        use_container_width=True
     ):
 
-        # STEP 1: GEMINI IMAGE VERIFICATION
+        # ------------------------------------------
+        # STEP 1: CHECK WHETHER IMAGE CONTAINS TEA
+        # ------------------------------------------
+
+        st.subheader("Step 1: Milk Tea Verification")
 
         try:
 
             with st.spinner(
-                "Gemini AI is checking the uploaded image..."
+                "Gemini AI is checking the image..."
             ):
 
-                gemini_client = load_gemini_client()
+                client = load_gemini_client()
 
-                classification = detect_tea(
-                    image,
-                    gemini_client
+                detection_result = detect_tea(
+                    uploaded_image,
+                    client
                 )
 
-        except Exception as error:
+            if detection_result == "NOT_MILK_TEA":
+
+                st.error("🚫 TEA NOT FOUND")
+
+                st.warning(
+                    "The uploaded image does not appear "
+                    "to contain brewed milk tea. "
+                    "Please upload a milk tea image."
+                )
+
+                st.stop()
+
+            elif detection_result == "UNCERTAIN":
+
+                st.warning(
+                    "⚠️ MILK TEA NOT CLEARLY IDENTIFIED"
+                )
+
+                st.info(
+                    "Please upload a clearer image with "
+                    "the brewed milk tea clearly visible."
+                )
+
+                st.stop()
+
+            elif detection_result == "MILK_TEA":
+
+                st.success("✅ MILK TEA DETECTED")
+
+        except Exception as e:
 
             st.error(
-                "Image verification failed. "
-                "Please check your Gemini API key, model access "
-                "and internet connection."
+                "Milk tea verification failed. "
+                "Please check your Gemini API key and logs."
             )
 
-            st.caption(str(error))
+            st.exception(e)
 
             st.stop()
 
-        st.divider()
 
-        st.subheader("AI Image Verification")
+        # ------------------------------------------
+        # STEP 2: FRESHNESS PREDICTION
+        # ------------------------------------------
 
-        # STEP 2: HANDLE NON-TEA IMAGE
-
-        if classification == "NOT_MILK_TEA":
-
-            st.error("🚫 TEA NOT FOUND")
-
-            st.warning(
-                "The uploaded image does not appear to contain "
-                "brewed milk tea. Please upload a clear milk tea image."
-            )
-
-            st.stop()
-
-        # STEP 3: HANDLE UNCLEAR IMAGE
-
-        elif classification == "UNCERTAIN":
-
-            st.warning(
-                "⚠️ IMAGE COULD NOT BE VERIFIED"
-            )
-
-            st.info(
-                "Please upload a clear, well-lit image "
-                "of brewed milk tea."
-            )
-
-            st.stop()
-
-        # STEP 4: MILK TEA DETECTED
-
-        st.success("✅ MILK TEA DETECTED")
-
-        # STEP 5: LOAD FRESHNESS MODEL AND PREDICT
+        st.subheader("Step 2: Freshness Prediction")
 
         try:
 
             with st.spinner(
-                "Loading freshness model and predicting..."
+                "Loading the trained model and predicting freshness..."
             ):
 
                 model = load_freshness_model()
 
                 predicted_class, confidence, predictions = (
-                    predict_freshness(image, model)
+                    predict_freshness(
+                        uploaded_image,
+                        model
+                    )
                 )
 
-        except Exception as error:
+            st.success("Freshness Prediction Completed!")
+
+            # --------------------------------------
+            # DISPLAY RESULT
+            # --------------------------------------
+
+            st.markdown("### Predicted Freshness Level")
+
+            if predicted_class == "FRESH":
+
+                st.success("🟢 FRESH")
+
+            elif predicted_class == "MODERATE":
+
+                st.warning("🟡 MODERATE")
+
+            else:
+
+                st.error("🔴 LOW")
+
+            st.metric(
+                label="Prediction Confidence",
+                value=f"{confidence:.2f}%"
+            )
+
+            # --------------------------------------
+            # CLASS-WISE SCORES
+            # --------------------------------------
+
+            st.markdown("### Class-wise Prediction Scores")
+
+            for class_name, score in zip(
+                CLASS_NAMES,
+                predictions
+            ):
+
+                percentage = float(score * 100)
+
+                st.write(
+                    f"**{class_name}: {percentage:.2f}%**"
+                )
+
+                st.progress(
+                    min(max(percentage / 100, 0.0), 1.0)
+                )
+
+        except Exception as e:
 
             st.error(
                 "Freshness prediction failed. "
                 "Please check your model file and deployment logs."
             )
 
-            st.caption(str(error))
-
-            st.stop()
-
-        # STEP 6: DISPLAY FRESHNESS RESULT
-
-        st.divider()
-
-        st.subheader("Freshness Prediction Result")
-
-        if predicted_class == "FRESH":
-
-            st.success("🟢 FRESH")
-
-        elif predicted_class == "MODERATE":
-
-            st.warning("🟡 MODERATE")
-
-        else:
-
-            st.error("🔴 LOW")
-
-        st.metric(
-            label="Predicted Freshness",
-            value=predicted_class,
-            delta=f"{confidence:.2f}% model score"
-        )
-
-        # STEP 7: CLASS-WISE SCORES
-
-        st.subheader("Class-wise Prediction Scores")
-
-        for index, class_name in enumerate(CLASS_NAMES):
-
-            probability = float(
-                predictions[index]
-            )
-
-            st.write(
-                f"**{class_name}: "
-                f"{probability * 100:.2f}%**"
-            )
-
-            st.progress(
-                max(
-                    0.0,
-                    min(1.0, probability)
-                )
-            )
-
-        st.success(
-            "Freshness prediction completed successfully!"
-        )
+            st.exception(e)
 
 
-# ------------------------------------------
-# ABOUT THE PROJECT
-# ------------------------------------------
+# --------------------------------------------------
+# ABOUT PROJECT
+# --------------------------------------------------
 
 st.divider()
 
@@ -472,31 +406,22 @@ st.subheader("About the Project")
 
 st.write(
     """
-    This application uses a two-stage AI approach.
+    This project estimates the freshness level of brewed
+    milk tea using RGB images and deep learning.
 
-    **Stage 1 – Image Verification:**
+    **Freshness classification:**
 
-    Gemini AI checks whether the uploaded image contains
-    brewed milk tea.
+    - FRESH: 0–3 minutes
+    - MODERATE: 4–10 minutes
+    - LOW: 11–20 minutes
 
-    **Stage 2 – Freshness Estimation:**
-
-    EfficientNetV2-S with CBAM predicts the freshness category.
-
-    **Input:** RGB image
-
-    **Image Size:** 224 × 224 pixels
-
-    **Output:** FRESH, MODERATE, LOW, or TEA NOT FOUND
+    The system uses EfficientNetV2-S with CBAM for
+    image-based freshness classification.
     """
 )
 
-st.info(
-    "This application estimates visual freshness patterns "
-    "learned from the dataset. It is not a laboratory test "
-    "or a food-safety assessment."
-)
-
 st.caption(
-    "Developed for the brewed milk tea freshness estimation project."
+    "This is an experimental image-based freshness "
+    "estimation system. It is not a food-safety test "
+    "or a substitute for laboratory analysis."
 )
