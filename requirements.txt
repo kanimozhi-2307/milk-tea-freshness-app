@@ -1,6 +1,7 @@
 
 streamlit
-tensorflow
+tensorflow==2.21.0
+keras>=3.10.0,<4.0.0
 numpy
 Pillow
 huggingface_hub
