@@ -75,7 +75,7 @@ st.title("🧋 Milk Tea Freshness Detection")
 
 st.write(
     "Upload or capture a brewed milk tea image "
-    "to estimate its freshness level using AI."
+    "To estimate its freshness level using Deep Learning Model."
 )
 
 st.info(
